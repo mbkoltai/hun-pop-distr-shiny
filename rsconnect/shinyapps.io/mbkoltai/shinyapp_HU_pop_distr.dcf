@@ -1,0 +1,12 @@
+name: shinyapp_HU_pop_distr
+title: shinyapp_HU_pop_distr
+username: mbkoltai
+account: mbkoltai
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 13214447
+bundleId: 9307298
+url: https://mbkoltai.shinyapps.io/shinyapp_HU_pop_distr/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE

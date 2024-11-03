@@ -1,0 +1,229 @@
+# maps
+lapply(c("tidyverse","jsonlite","sf","plotly","htmlwidgets"), library, character.only=TRUE)
+source("functions.R")
+# packs=c("tidyverse","ggrepel","plotly") # ,"RcppRoll","scales","lubridate","wpp2019","wesanderson"
+# missing_packs = setdiff(packs, as.data.frame(installed.packages()[,c(1,3:4)])$Package)
+# if (length(missing_packs)>0){ lapply(missing_packs,install.packages,character.only=TRUE) }
+# lapply(packs,library,character.only=TRUE); rm(list = c("packs","missing_packs"))
+# GGPLOT SETTINGS
+standard_plot_theme <- theme(plot.title=element_text(hjust=0.5,size=21),
+                             axis.title.x=element_text(size=18),axis.title.y=element_text(size=18),
+                             axis.text.x=element_text(size=16,angle=90,vjust=0.5),axis.text.y=element_text(size=16),
+                             plot.caption=element_text(size=12),plot.caption.position="plot",
+                             strip.text=element_text(size=18),legend.title =element_text(size=20),
+                             panel.grid.major.y=element_blank(), 
+                             legend.text=element_text(size=15))
+
+### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ###
+
+# OEVK
+l_oevk <- list()
+l_oevk$oevk_telep_szavkor_lista <- read_csv("adatok/oevk_telep_szavkor_lista.csv")
+l_oevk$oevk_telep_szavkor_sorszam <- oevk_telep_szavkor_lista <- read_csv("adatok/oevk_telep_szavkor_sorszam.csv")
+
+# val.polg-ok szama
+# szavazokorok_ep2024 <- read_csv("../EP_valasztasok/szavazokorok-osszesites_EP_kepviselok_valasztasa_2024_2024069.csv")
+ep_telepules_eredmenyek_2009_2014_2019_2024 <- read_csv("adatok/ep_telepules_eredmenyek_2009_2014_2019_2024.csv")
+l_oevk$n_valpolg_ep <- ep_telepules_eredmenyek_2009_2014_2019_2024 %>% 
+  select(TELEPÜLÉS,MEGYE,EV,n_valpolg_nevjegyz) %>%
+  distinct() %>% arrange(MEGYE,TELEPÜLÉS,EV)
+
+l_oevk$n_valpolg_ogy2022 <- read_csv(
+  "../2022_ogy_val/valasztasletolthetoeredmenyek2022_telepules_szint.csv")
+
+
+# telepulesek lakossagszam szerint
+l_telep_meret <- list()
+l_telep_meret$telepules_lista <- read_csv("../telepules_lista.csv")
+# check total pop
+sum((l_telep_meret$telepules_lista %>% filter(!`Helység megnevezése` %in% "Budapest") %>%
+  rename(lakonep=`Lakó-népesség`))$lakonep)
+
+# cumulative distrib
+l_telep_meret$df_cumul_pop <- left_join(
+  l_telep_meret$telepules_lista %>% 
+    filter(!grepl("ker\\.",`Helység megnevezése`)) %>%
+    rename(telep_nev=`Helység megnevezése`,lakonep=`Lakó-népesség`) %>%
+    select(telep_nev,lakonep),
+  l_oevk$n_valpolg_ogy2022 %>% 
+    select(telep,osszesvalaszto) %>% distinct() %>%
+    mutate(telep_nev=ifelse(grepl("Budapest",telep),"Budapest",telep)) %>%
+    group_by(telep_nev) %>% summarise(osszesvalaszto=sum(osszesvalaszto)) ) %>% 
+  pivot_longer(!telep_nev,names_to="pop_tipus",values_to="pop_ertek") %>%
+  arrange(pop_tipus,pop_ertek) %>%
+  group_by(pop_tipus) %>% # tot_pop
+  mutate(tot_pop=sum(pop_ertek),
+         cumul_sum=cumsum(pop_ertek),
+         cumul_prob=cumul_sum/tot_pop) %>%
+  pivot_longer(!c(telep_nev,pop_tipus,pop_ertek,tot_pop),names_to="valt_tipus") %>%
+  mutate(valt_tipus=ifelse(grepl("prob",valt_tipus),
+            "teljes lakosság %-a","lakosságszám"),
+        pop_tipus=ifelse(grepl("lakonep",pop_tipus),"lakók","választók"))
+
+# plot settings
+l_telep_meret$sel_pop_sizes <- c(100,200,500,1e3,2e3,5e3,1e4,2e4,4e4,5e4,75e3,1e5,150e3,200e3)
+l_telep_meret$y_breaks$abs_num <- 1e6*(0:8); l_telep_meret$y_breaks$perc <- (0:8)*10
+l_telep_meret$bp_label_df <- l_telep_meret$df_cumul_pop %>% 
+  filter(grepl("Budap",telep_nev)) %>%
+  group_by(pop_tipus) %>%
+  mutate(valt_tipus=ifelse(grepl("teljes",valt_tipus),"lakosságszám","teljes lakosság %-a"),
+         # pop_tipus=ifelse(grepl("lak",pop_tipus),"lakosok","választók"),
+         text_val=signif(pop_ertek*ifelse(grepl("teljes",valt_tipus),100,1)/value,3),
+         text_str=ifelse(grepl("%",valt_tipus),
+                          paste0(pop_tipus," ",text_val,"%-a"),
+                          paste0(text_val/1e6," millió ",gsub("ok$|k$","",pop_tipus)) ),
+         pop_ertek=5*min(l_telep_meret$sel_pop_sizes),
+         x_pos=3*text_val) %>% select(!value)
+l_telep_meret$bp_label_str <- lapply(c("teljes","szám"), function(x) paste0("BP: ", paste0((
+    l_telep_meret$bp_label %>% filter(grepl(x,valt_tipus)))$text_str,
+    collapse = ", ") ) )
+# paste0("Budapest: ",text_val*ifelse(grepl("teljes",valt_tipus),1,1/1e6),
+#                          ifelse(grepl("teljes",valt_tipus),"%"," millió"), # pop_ertek
+#                          " (",pop_tipus,")")
+
+# PLOT cumul distrib
+p_l_telep_meret_cumul_pop <- lapply(1:2, function(k_plot)
+l_telep_meret$df_cumul_pop %>% # lakonep
+  filter(pop_ertek>=min(l_telep_meret$sel_pop_sizes) & 
+           !grepl("Budap",telep_nev) & 
+           grepl(c("teljes","szám")[k_plot],valt_tipus) ) %>%
+  mutate(value=value*ifelse(grepl("teljes",valt_tipus),100,1) ) %>%
+ggplot(aes(x=pop_ertek,y=value,group=pop_tipus,color=pop_tipus,
+           text=paste0(telep_nev," | településméret: ", pop_ertek, " | ",
+                       ifelse(grepl("teljes",valt_tipus),round(value,1),round(value/1e3,1)), 
+                       ifelse(grepl("teljes",valt_tipus),"% (él ennél kisebb településen)",
+                              " ezer lakos (él ennél kisebb településen)") ))) + 
+  # facet_grid(~valt_tipus,scales="free_y") + # nrow=2
+  geom_point(shape=21,alpha=2/3,size=2,show.legend = F) + # geom_line() +
+  scale_size_continuous(range=c(0.1,3)) + # Controls the min and max size
+  scale_x_log10(breaks=l_telep_meret$sel_pop_sizes,expand=expansion(mult=c(0.01))) + 
+  scale_y_continuous(limits=c(0,NA),expand=expansion(mult=c(0.03)),
+            breaks=l_telep_meret$y_breaks[[c("perc","abs_num")[k_plot]]]) + # 
+  # geom_text(aes(x=,y=),label=l_telep_meret$bp_label_str,size=6) +
+  # ggtitle(label=l_telep_meret$bp_label_str[[k_plot]]) + labs(color="") +
+  xlab("településméret (lakosok/választók száma)") + 
+  ylab(paste0(c("%","")[k_plot]," lakos/választó ennél kisebb településen")) +
+  theme_bw() + standard_plot_theme + 
+  theme(legend.position="top",plot.title=element_text(size=15)) 
+)
+
+# ggtitle("Magyarország lakosságának kumulatív eloszlása településméret szerint") +
+if (F) {
+  lapply(1:2, function(k)
+  paste0("outputs/hun_cumul_pop_distrib_",c("perc","szam")[k],".png") %>% 
+    ggsave(plot=p_l_telep_meret_cumul_pop[[k]],width=32,height=22,units="cm") )
+}
+
+l_plotly <- lapply(1:2, function(x) ggplotly(p_l_telep_meret_cumul_pop[[x]],tooltip="text"))
+# as plotly
+l_plotly[[1]]
+# SAVE
+lapply(1:2, function(x) saveWidget(
+  ggplotly(p_l_telep_meret_cumul_pop[[x]],tooltip="text"),
+  paste0("outputs/hun_cumul_pop_distrib",c("_szazalek","_szam")[x],".html")) )
+
+###
+# # ShinyApp
+# shinyApp(
+#   ui = ui,
+#   server = function(input, output, session) {
+#     server(input, output, session, l_plotly) }
+# )
+
+# function: provide two values, calculate what % lives within that range
+fcn_pop_perc_in_range(df=l_telep_meret$df_cumul_pop,
+                      lower_bound=50e3, upper_bound=500e3)
+
+### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ###
+# EXTRACT HEX MAP from json file
+# RJSON
+# library(rjson) # install.packages("rjson"); 
+# hungary_const <- read_sf("../terkepek/hungary-const.17bfb3f4.json") # doesnt work
+l_hu_oevk <- list()
+# l_hu_oevk$hungary_const_json <- fromJSON(txt="json_files/hungary-const.17bfb3f4.json")
+l_hu_oevk$hun_bp_inset$file <- fromJSON(txt="json_files/hungary-budapest-inset-const.9e954a3c.json")
+# these are GPS coordinates
+l_hu_oevk$hun_bp_inset$geometries <- l_hu_oevk$hun_bp_inset$file$content$objects$regions$geometries
+# which arcs belong to which OEVK?
+l_hu_oevk$hun_bp_inset$df_arc_ind <- lapply(1:nrow(l_hu_oevk$hun_bp_inset$geometries), function(x) 
+  data.frame(oevk=l_hu_oevk$hun_bp_inset$geometries$properties$name[x], 
+             arc_ind=unlist(l_hu_oevk$hun_bp_inset$geometries$arcs[x])) ) %>% 
+  bind_rows() %>% mutate(arc_ind_abs=ifelse(arc_ind>=0,arc_ind,abs(arc_ind+1)))
+
+# arcs of the polygons
+l_hu_oevk$hun_bp_inset$arcs <- with(l_hu_oevk$hun_bp_inset$file$content, 
+                   lapply(1:length(arcs), function(x) data.frame(arcs[[x]],arc_ind=x-1) ) %>% 
+                                      bind_rows())
+
+# x-y coordinates (need to rotate)
+l_hu_oevk$hun_bp_inset$df_coord <- left_join(
+  l_hu_oevk$hun_bp_inset$arcs, 
+  l_hu_oevk$hun_bp_inset$df_arc_ind %>% 
+    select(!arc_ind) %>% rename(arc_ind=arc_ind_abs),
+  by="arc_ind") %>%
+  mutate(x=X1,y=-X2) %>% 
+  select(!c(X1,X2,X3,)) %>% # arc_ind_abs, arc_ind
+  unique() %>%
+  group_by(x,y) %>%
+  mutate(x_y_pos_ind=cur_group_id()) %>%
+  ungroup() %>% 
+  mutate(n_oevk=as.numeric(factor(oevk))) %>% 
+  select(!arc_ind) %>% unique() %>%
+  group_by(oevk) %>%
+  mutate(center_x = mean(x),
+         center_y = mean(y),
+         angle = calculate_angle(x, y, center_x, center_y)   ) %>%
+  arrange(oevk, angle) %>%
+  mutate(vertex_order = row_number()) %>% 
+  select(-angle,-x_y_pos_ind) %>%
+  mutate(n_oevk_short = sapply(oevk, shorten_string))
+# centre points
+l_hu_oevk$hun_bp_inset$hex_centr <- l_hu_oevk$hun_bp_inset$df_coord %>%
+  group_by(oevk,n_oevk,n_oevk_short) %>%
+  summarise(center_x=unique(center_x),
+            center_y=unique(center_y))
+# rem centres
+l_hu_oevk$hun_bp_inset$df_coord <- l_hu_oevk$hun_bp_inset$df_coord %>% 
+  select(-center_x,-center_y)
+
+# plot as points (outside BP)
+# l_hu_oevk$hun_bp_inset$df_coord %>%
+#   filter(!grepl("Buda",oevk)) %>%
+# ggplot(aes(x=x,y=y)) + 
+#   geom_point(size=3) + 
+#   geom_text(aes(label=n_oevk),color="red") +
+#   theme_bw()
+
+# as hexagons
+p_hun_oevk <- l_hu_oevk$hun_bp_inset$df_coord %>%
+  filter(!grepl("Budap",oevk)) %>% ungroup() %>%
+ggplot(aes(x=x,y=y)) + 
+  geom_polygon(aes(group=oevk,fill=n_oevk),color="grey") +
+  geom_text(data=l_hu_oevk$hun_bp_inset$hex_centr %>%
+              filter(!grepl("Budap",oevk)),
+            aes(x=center_x,y=center_y,label=n_oevk_short),
+            color="red") +
+  theme_bw() + xlab("") + ylab("") +
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank()); p_hun_oevk
+
+# interactive map
+ggplotly(p_hun_oevk)
+
+
+# same for BP
+# if (F) {
+p_bp_oevk <- l_hu_oevk$hun_bp_inset$df_coord %>%
+    filter(grepl("Budap",oevk)) %>%
+ggplot(aes(x=x,y=y,group=oevk)) + 
+    geom_polygon(fill="lightgrey",color="red") +
+    geom_text(data=l_hu_oevk$hun_bp_inset$hex_centr %>%
+                filter(grepl("Budap",oevk)),
+              aes(x=center_x,y=center_y,label=oevk),
+              color="blue") + theme_bw(); p_bp_oevk
+# }
+
+ggplotly(p_bp_oevk)
+
+### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ###
+### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ###
